@@ -1,0 +1,48 @@
+[package]
+name = "finder"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+splinter-icon = { path = "splinter-icon" }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["smallvec", "fmt", "ansi", "std", "env-filter"] }
+
+xdg = "2.5.2"
+
+fork = "0.2.0"
+
+dirs = "5.0.1"
+rust-ini = "0.21.1"
+eyre = "0.6.12"
+
+fuzzy-matcher = "0.3.7"
+
+eframe = { version = "0.29", default-features = false, features = ["accesskit",
+    "default_fonts",
+    "wgpu",
+    "wayland",
+    "web_screen_reader",
+    "x11", ] }
+egui_extras = { version = "0.29", features = ["all_loaders"] }
+
+strsim = "0.11.1"
+
+chrono = { version = "0.4.38", features = ["serde"] }
+image = "0.25.2"
+ico = "0.3.0"
+sha2 = "0.10.8"
+base64 = "0.22.1"
+
+serde = "1.0.207"
+serde_json = "1.0.124"
+resvg = "0.43.0"
+
+[profile.dev]
+opt-level = 1
+
+[workspace]
+members = [
+    "splinter-icon",
+]
