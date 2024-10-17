@@ -133,9 +133,9 @@ fn main() -> eyre::Result<()> {
             .init();
         info!("Initializing");
 
-        let dir = cache_dir().unwrap().join("finder");
+        let dir = cache_dir().unwrap().join("ignition");
         let mut icons = IconManager::new(&dir);
-        let search = SearchEngine::new(data_local_dir().unwrap().join("finder"));
+        let search = SearchEngine::new(data_local_dir().unwrap().join("ignition"));
         let shortcuts = ShortcutManager::new().unwrap();
 
         for shortcut in shortcuts.shortcuts.values() {
@@ -145,7 +145,7 @@ fn main() -> eyre::Result<()> {
 
         let to_launch_c = to_launch.clone();
         eframe::run_native(
-            "Finder",
+            "Ignition",
             NativeOptions {
                 viewport: ViewportBuilder {
                     transparent: Some(true),
@@ -217,9 +217,6 @@ fn main() -> eyre::Result<()> {
                     .arg(&to_launch.exec)
                     .spawn()
                     .expect("failed to execute process");
-
-             
-                Command::new("killall").arg("finder").output().unwrap();
 
                 let output = output.wait_with_output().unwrap();
                 println!("{:?}", output.status);
