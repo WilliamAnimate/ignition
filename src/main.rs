@@ -74,6 +74,7 @@ fn main() -> eyre::Result<()> {
         }
         icons.save().wrap_err("Failed to save icons")?;
 
+        info!("Initialized core in {:?}", start.elapsed());
         info!("Launching ui");
         let to_launch_c = to_launch.clone();
         eframe::run_native(
