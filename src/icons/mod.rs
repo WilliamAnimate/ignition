@@ -1,9 +1,9 @@
 mod finder;
 
+use crate::config::Config;
 use crate::icons::finder::IconFinder;
 use crate::shortcuts::{Shortcut, ShortcutId};
-use dirs::home_dir;
-use eyre::{bail, Context, ContextCompat};
+use eyre::{Context, ContextCompat};
 use ico::IconDir;
 use image::imageops::FilterType;
 use image::{DynamicImage, RgbaImage};
@@ -12,27 +12,12 @@ use resvg::tiny_skia::Pixmap;
 use resvg::usvg::{Options, Tree};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs::{create_dir_all, read_to_string, remove_file, write};
+use std::fs::{create_dir_all, read_to_string, remove_file};
 use std::path::{Path, PathBuf};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 const PREFERRED_ICON_SIZE: u16 = 32;
 const PREFERRED_ICON_SIZE_U32: u32 = PREFERRED_ICON_SIZE as u32;
-//pub struct IconDrawer {
-//     images: HashMap<>
-// }
-//
-// impl IconDrawer {
-//     pub fn iamge(manager: &mut IconManager, ui: &mut Ui) {
-//
-//         egui::Image::from_uri("file://")
-//         ui.ctx().load_texture("Image", ImageData::Color(Arc::new(ColorImage::from_rgba_unmultiplied(
-//
-//         ))))
-//
-//         let image = egui::Image::new(ImageSource::Uri(Cow::Borrowed("")));
-//     }
-// }
 
 pub struct IconManager {
     icon_image_dir: PathBuf,
@@ -45,29 +30,20 @@ pub struct IconManager {
 }
 
 impl IconManager {
-    pub fn new(dir: &Path) -> IconManager {
+    pub fn new(dir: &Path) -> eyre::Result<IconManager> {
         let cache_dir = dir.join("icons");
-        create_dir_all(&cache_dir).unwrap();
+        create_dir_all(&cache_dir).wrap_err("Failed to create icons dir")?;
 
         let model_path = cache_dir.join("icons.json");
-        let model = if let Ok(value) = read_to_string(&model_path)
-            && let Ok(model) = serde_json::from_str::<IconsModel>(&value)
-        {
-            model
-        } else {
-            println!("CLEARING ICON STORAGE");
-            IconsModel {
-                values: Default::default(),
-            }
-        };
+        let model = Config::<IconsModel>::read_file(&model_path).wrap_err("Failed to read icon")?;
 
-        IconManager {
+        Ok(IconManager {
             icon_image_dir: cache_dir,
             model_path,
             model,
             seen_icons: Default::default(),
             finder: None,
-        }
+        })
     }
 
     pub fn read_icon(&self, id: &ShortcutId) -> Option<PathBuf> {
@@ -82,18 +58,12 @@ impl IconManager {
         };
         self.seen_icons.insert(shortcut.id.clone());
 
-       if let Some(icon) = self.model.values.get(&shortcut.id) {
-           if icon.source_location == source {
-               // Skip because they are the same
-               return;
-           }
-       }
-
-        //let mut icon_path = freedesktop_icons_greedy::lookup(&source)
-        //    .with_greed()
-        //    .with_size(PREFERRED_ICON_SIZE)
-        //    .find()
-        //    .unwrap_or(PathBuf::from(source.clone()));
+        if let Some(icon) = self.model.values.get(&shortcut.id) {
+            if icon.source_location == source {
+                // Skip because they are the same
+                return;
+            }
+        }
 
         info!("Compiling icon {}", shortcut.name);
         let source_path = PathBuf::from(&source);
@@ -101,17 +71,12 @@ impl IconManager {
             let finder = self.finder.get_or_insert_with(IconFinder::new);
 
             let mut vec = finder.find(&source);
-            // To make it stable!
+            // To make the icons order stable!
             vec.sort_by_cached_key(|v| v.path.clone());
             vec.sort_by_cached_key(|v| v.descriptor.theme.clone());
             vec.reverse();
             vec.sort_by_cached_key(|v| v.descriptor.ord(PREFERRED_ICON_SIZE));
             vec.reverse();
-
-            // info!("Found icons for {} {source} BEST: {icon_path:?}", shortcut.name);
-            // for x in vec.iter().take(10) {
-            //     info!(" - {} {:?}", x.descriptor, x.path);
-            // }
 
             if let Some(location) = vec.first() {
                 location.path.clone()
@@ -163,8 +128,7 @@ impl IconManager {
     pub fn save(&mut self) -> eyre::Result<()> {
         self.purge_unseen_icons();
 
-        let string = serde_json::to_string(&self.model).wrap_err("Serialization")?;
-        write(&self.model_path, string).wrap_err("Writing to file")?;
+        Config::write_file(&self.model_path, &self.model).wrap_err("Saving config")?;
         Ok(())
     }
 
@@ -243,7 +207,7 @@ impl IconManager {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct IconsModel {
     values: HashMap<ShortcutId, IconEntryModel>,
 }
@@ -265,10 +229,4 @@ impl IconsModel {
 
         panic!("Could not find a free id");
     }
-}
-
-pub struct IconsLookup {}
-
-impl IconsLookup {
-    pub fn new() {}
 }

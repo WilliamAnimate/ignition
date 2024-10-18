@@ -1,14 +1,5 @@
-#![feature(let_chains)]
-#![feature(deref_pure_trait)]
-#![feature(arbitrary_self_types)]
-#![feature(extract_if)]
-
-use std::fs::read;
-use std::path::{Path, PathBuf};
-use std::process::{exit, Command};
-use std::ptr::null_mut;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use dirs::{cache_dir, data_local_dir};
@@ -16,16 +7,16 @@ use eframe::egui::scroll_area::ScrollBarVisibility;
 use eframe::egui::style::{Spacing, TextCursorStyle};
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{
-    Align, Align2, CentralPanel, Color32, Event, FontData, FontDefinitions, FontId, FontSelection,
-    FontTweak, Frame, Id, Key, LayerId, Margin, NumExt, Order, Painter, PointerButton, Pos2, Rect,
-    Rounding, ScrollArea, Sense, Shadow, Stroke, Style, TextEdit, TextFormat, Ui, Vec2,
-    ViewportBuilder, Visuals, X11WindowType,
+    Align, Align2, CentralPanel, Color32, Event, FontId, FontSelection, Frame, Id, Key, LayerId,
+    Margin, NumExt, Order, Painter, Pos2, Rect, Rounding, ScrollArea, Sense, Shadow, Stroke, Style,
+    TextEdit, TextFormat, Ui, Vec2, ViewportBuilder, Visuals, X11WindowType,
 };
 use eframe::emath::easing;
 use eframe::epaint::text::TextWrapping;
 use eframe::epaint::FontFamily;
 use eframe::{egui, App, NativeOptions};
 use egui_extras::install_image_loaders;
+use eyre::{Context, ContextCompat};
 use fork::{daemon, Fork};
 use splinter_icon::icon;
 use tracing::level_filters::LevelFilter;
@@ -34,85 +25,17 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 use crate::colors::Colors;
+use crate::fonts::load_fonts;
 use crate::icons::IconManager;
 use crate::search::{SearchEngine, SearchQuery};
 use crate::shortcuts::{Shortcut, ShortcutId, ShortcutManager};
 
 mod colors;
 mod config;
+mod fonts;
 mod icons;
 mod search;
 mod shortcuts;
-
-macro_rules! load_font {
-    ($PATH:literal) => {
-        #[allow(clippy::diverging_sub_expression)]
-        'load: {
-            #[cfg(debug_assertions)]
-            break 'load load_font($PATH.replace("../", ""));
-            #[cfg(not(debug_assertions))]
-            break 'load load_font_static(include_bytes!($PATH));
-        }
-    };
-}
-pub fn load_fonts() -> FontDefinitions {
-    let mut fonts = FontDefinitions::empty();
-
-    add_font(
-        &mut fonts,
-        load_font!("../assets/Icons.ttf").tweak(FontTweak {
-            scale: 1.0,
-            y_offset_factor: 0.0,
-            y_offset: 0.0,
-            baseline_offset_factor: 0.0,
-        }),
-        "Icons",
-    );
-    add_font(
-        &mut fonts,
-        load_font!("../assets/Mukta-Regular.ttf").tweak(FontTweak {
-            scale: 1.0,
-            y_offset_factor: 0.0,
-            y_offset: 0.0,
-            baseline_offset_factor: 0.0,
-        }),
-        "Roboto-Regular",
-    );
-
-    add_font(
-        &mut fonts,
-        load_font!("../assets/Mukta-SemiBold.ttf").tweak(FontTweak {
-            scale: 1.0,
-            y_offset_factor: 0.0,
-            y_offset: 0.0,
-            baseline_offset_factor: -0.01,
-        }),
-        "Roboto-Bold",
-    );
-
-    fonts.families.insert(
-        FontFamily::Proportional,
-        vec!["Roboto-Regular".to_string(), "Icons".to_string()],
-    );
-    fonts
-        .families
-        .insert(FontFamily::Monospace, vec!["Roboto-Regular".to_string()]);
-
-    fonts
-}
-fn load_font_static(font: &'static [u8]) -> FontData {
-    FontData::from_static(font)
-}
-fn load_font<P: AsRef<Path>>(path: P) -> FontData {
-    FontData::from_owned(read(path).unwrap())
-}
-fn add_font(fonts: &mut FontDefinitions, font: FontData, name: &str) {
-    fonts.font_data.insert(name.to_owned(), font);
-    fonts.families.insert(
-        FontFamily::Name(Arc::from(name)),
-        vec![name.to_string(), "Roboto-Regular".to_string()],
-    );
-}
 
 struct ApplicationLaunch {
     exec: String,
@@ -121,28 +44,37 @@ struct ApplicationLaunch {
 fn main() -> eyre::Result<()> {
     let to_launch: Arc<Mutex<Option<ApplicationLaunch>>> = Arc::new(Mutex::new(None));
 
+    let cache_dir = cache_dir()
+        .wrap_err("Failed to find cache dir")?
+        .join("ignition");
+    let data_local_dir = data_local_dir()
+        .wrap_err("Failed to find data local dir")?
+        .join("ignition");
+
     {
         let start = Instant::now();
-
-        let mut filter = EnvFilter::from_default_env().add_directive("wgpu_core=error".parse()?);
+        let filter = EnvFilter::from_default_env().add_directive("wgpu_core=error".parse()?);
         tracing_subscriber::fmt()
             .compact()
             .with_env_filter(filter)
             .with_max_level(LevelFilter::INFO)
             .finish()
             .init();
-        info!("Initializing");
 
-        let dir = cache_dir().unwrap().join("ignition");
-        let mut icons = IconManager::new(&dir);
-        let search = SearchEngine::new(data_local_dir().unwrap().join("ignition"));
-        let shortcuts = ShortcutManager::new().unwrap();
+        info!("Initializing core");
+        let mut icons =
+            IconManager::new(&cache_dir).wrap_err("Failed to initialize IconManager")?;
+        let search =
+            SearchEngine::new(&data_local_dir).wrap_err("Failed to initialize SearchEngine")?;
+        let shortcuts = ShortcutManager::new().wrap_err("Failed to initialize ShortcutManager")?;
 
+        info!("Loading icons");
         for shortcut in shortcuts.shortcuts.values() {
             icons.prepare_icon(shortcut);
         }
-        icons.save().unwrap();
+        icons.save().wrap_err("Failed to save icons")?;
 
+        info!("Launching ui");
         let to_launch_c = to_launch.clone();
         eframe::run_native(
             "Ignition",
@@ -159,14 +91,13 @@ fn main() -> eyre::Result<()> {
                 context.egui_ctx.set_style(Style {
                     visuals: Visuals {
                         window_fill: Color32::TRANSPARENT,
-                        panel_fill: Color32::from_rgba_unmultiplied(0x18, 0x18, 0x25, 0),
+                        panel_fill: Color32::TRANSPARENT,
                         window_shadow: Shadow::NONE,
                         text_cursor: TextCursorStyle {
                             stroke: Stroke::new(1.0, Colors::OVERLAY0),
                             blink: false,
                             ..TextCursorStyle::default()
                         },
-
                         ..Visuals::dark()
                     },
                     spacing: Spacing {
@@ -199,14 +130,10 @@ fn main() -> eyre::Result<()> {
 
                 Ok(Box::new(application))
             }),
-        )
-        .unwrap();
+        )?;
     }
 
-    info!("HELLo");
-
-    let quard = to_launch.lock().unwrap();
-
+    let quard = to_launch.lock().expect("Failed to lock launch mutex.");
     if let Some(to_launch) = &*quard {
         info!("Launching {}", to_launch.exec);
 
@@ -218,7 +145,7 @@ fn main() -> eyre::Result<()> {
                     .spawn()
                     .expect("failed to execute process");
 
-                let output = output.wait_with_output().unwrap();
+                let output = output.wait_with_output().expect("Failed to run program");
                 println!("{:?}", output.status);
                 println!("{:?}", String::from_utf8(output.stdout));
                 println!("{:?}", String::from_utf8(output.stderr));
@@ -528,39 +455,25 @@ impl Application {
                 }
 
                 ui.input(|input| {
-                    if let Some(pos) = input.pointer.hover_pos()
-                        && self.mouse_lock_from.elapsed() > Duration::from_millis(300)
-                    {
-                        for (rect, id) in &hit_boxes {
-                            let rect = rect.expand2(Vec2::new(0.0, ENTRY_SPACING / 2.0));
-                            if rect.contains(pos) {
-                                let Some((id, _)) =
-                                    self.rankings.iter().enumerate().find(|(_, v)| *v == id)
-                                else {
-                                    continue;
-                                };
+                    if let Some(pos) = input.pointer.hover_pos() {
+                        if self.mouse_lock_from.elapsed() > Duration::from_millis(300) {
+                            for (rect, id) in &hit_boxes {
+                                let rect = rect.expand2(Vec2::new(0.0, ENTRY_SPACING / 2.0));
+                                if rect.contains(pos) {
+                                    let Some((id, _)) =
+                                        self.rankings.iter().enumerate().find(|(_, v)| *v == id)
+                                    else {
+                                        continue;
+                                    };
 
-                                if input.pointer.is_moving() {
-                                    self.selected = Some(id);
-                                }
+                                    if input.pointer.is_moving() {
+                                        self.selected = Some(id);
+                                    }
 
-                                // If we press on an entry, we select it
-                                if input.pointer.primary_down() {
-                                    //if self.selected != Some(id) {
-                                    //    self.last_down = Instant::now();
-                                    //}
-                                    //self.selected = Some(id);
-                                    //
-                                    //if self.last_down.elapsed() > Duration::from_millis(50)
-                                    //    && self.last_up.elapsed() < Duration::from_millis(500)
-                                    //    && self.last_down.elapsed() < Duration::from_millis(500)
-                                    //{
-                                    //    self.open_selected();
-                                    //}
-                                    //self.last_down = Instant::now();
-                                    self.open_selected();
-                                } else {
-                                    //self.last_up = Instant::now();
+                                    // If we press on an entry, we select it
+                                    if input.pointer.primary_down() {
+                                        self.open_selected();
+                                    }
                                 }
                             }
                         }
@@ -579,12 +492,6 @@ impl Application {
         entry: &Shortcut,
     ) -> Rect {
         let bg_rect = rect.expand(3.0);
-        //if selected {
-        //    p.rect(rect.expand(3.0), Rounding::same(6.0), Colors::BG, Stroke::new(
-        //        0.0,
-        //        Colors::SURFACE0,
-        //    ));
-        //}
 
         rect.max.x -= 4.0;
         rect.min.x += 10.0;
@@ -651,18 +558,18 @@ impl Application {
             //    )
             //}
 
-            if let Some(comment) = entry.comment.as_ref()
-                && selected > 0.0
-            {
-                job.append(
-                    &format!(" {comment}"),
-                    8.0,
-                    TextFormat {
-                        font_id: font.clone(),
-                        color: text_color.gamma_multiply(0.5 * selected),
-                        ..TextFormat::default()
-                    },
-                )
+            if let Some(comment) = entry.comment.as_ref() {
+                if selected > 0.0 {
+                    job.append(
+                        &format!(" {comment}"),
+                        8.0,
+                        TextFormat {
+                            font_id: font.clone(),
+                            color: text_color.gamma_multiply(0.5 * selected),
+                            ..TextFormat::default()
+                        },
+                    )
+                }
             }
             fonts.layout_job(job)
         });
@@ -698,18 +605,12 @@ impl Application {
 
         let mut to_launch = self.to_launch.lock().unwrap();
         *to_launch = Some(launch);
-        self.search.record_use(id.clone());
+        self.search.record_use(id.clone()).unwrap();
     }
 }
 
 impl App for Application {
-    fn clear_color(&self, _visuals: &Visuals) -> [f32; 4] {
-        Colors::CRUST
-            .linear_multiply(0.75)
-            .to_normalized_gamma_f32()
-    }
-
-    fn update(&mut self, ctx: &eframe::egui::Context, _: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         if let Some(start) = self.start.take() {
             info!("Initialized in {:?}", start.elapsed());
         }
@@ -825,5 +726,11 @@ impl App for Application {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             });
         }
+    }
+
+    fn clear_color(&self, _visuals: &Visuals) -> [f32; 4] {
+        Colors::CRUST
+            .linear_multiply(0.75)
+            .to_normalized_gamma_f32()
     }
 }

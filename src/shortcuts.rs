@@ -90,7 +90,7 @@ impl ShortcutManager {
         }
 
         Ok(ShortcutManager {
-            shortcuts: shortcuts,
+            shortcuts,
         })
     }
 }

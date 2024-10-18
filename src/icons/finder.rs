@@ -1,11 +1,11 @@
-use std::cmp::Ordering;
 use dirs::home_dir;
-use std::ffi::{OsStr, OsString};
+use std::cmp::Ordering;
+use std::ffi::OsStr;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 use xdg::BaseDirectories;
 
 fn icon_theme_base_paths() -> Vec<PathBuf> {
@@ -49,8 +49,6 @@ impl CachedDir {
         })
     }
 
-
-
     fn resolve_entries(path: PathBuf) -> io::Result<Vec<CachedDirEntry>> {
         let dir = path.read_dir()?;
         let mut entries = Vec::new();
@@ -67,7 +65,8 @@ impl CachedDir {
 
     pub fn entries(&mut self) -> &mut Vec<CachedDirEntry> {
         let buf = self.path.clone();
-        self.entries.get_or_insert_with(|| Self::resolve_entries(buf).unwrap())
+        self.entries
+            .get_or_insert_with(|| Self::resolve_entries(buf).unwrap())
     }
     pub fn files(&mut self) -> Vec<&String> {
         self.entries()
@@ -100,7 +99,7 @@ impl CachedDir {
                 continue;
             };
 
-            if to_string(dir.path.file_name().unwrap()) != name {
+            if to_string(dir.path.file_name().expect("File name")) != name {
                 continue;
             }
 
@@ -110,7 +109,13 @@ impl CachedDir {
         None
     }
 
-    pub fn find(&mut self, icon_name: &str, out: &mut Vec<IconLocation>, deep: bool, desc: IconDescriptor) -> u32 {
+    pub fn find(
+        &mut self,
+        icon_name: &str,
+        out: &mut Vec<IconLocation>,
+        deep: bool,
+        desc: IconDescriptor,
+    ) -> u32 {
         let desc = desc.apply(&self.name);
 
         let mut found = 0;
@@ -121,14 +126,12 @@ impl CachedDir {
             }
         }
 
-
         let path = self.path.clone();
         for file in self.files() {
             if file.contains(icon_name) {
                 let path = path.join(file);
                 let file_name = to_string(path.file_stem().unwrap());
                 let extension = to_string(path.extension().unwrap());
-
 
                 if extension == "xpm" {
                     continue;
@@ -139,15 +142,12 @@ impl CachedDir {
                 }
 
                 out.push(IconLocation {
-                    file_name: file_name,
-                    extension: extension,
+                    file_name,
                     path,
                     descriptor: desc.clone(),
                 });
             }
         }
-
-
 
         found
     }
@@ -170,12 +170,6 @@ impl CachedDirEntry {
         })
     }
 }
-pub struct IconDir {
-    path: PathBuf,
-    dir: CachedDir,
-}
-
-impl IconDir {}
 
 pub struct IconFinder {
     dirs: Vec<CachedDir>,
@@ -196,22 +190,37 @@ impl IconFinder {
         }
     }
 
-    fn start_find(dir: &mut CachedDir,  icon_name: &str, out: &mut Vec<IconLocation>, step: usize) -> u32 {
+    fn start_find(
+        dir: &mut CachedDir,
+        icon_name: &str,
+        out: &mut Vec<IconLocation>,
+        step: usize,
+    ) -> u32 {
         match step {
             0 => {
                 if let Some(subdir) = dir.join("hicolor") {
-                    return subdir.find(icon_name, out, true, IconDescriptor {
-                        theme: Some("hicolor".to_string()),
-                        ..IconDescriptor::default()
-                    });
+                    return subdir.find(
+                        icon_name,
+                        out,
+                        true,
+                        IconDescriptor {
+                            theme: Some("hicolor".to_string()),
+                            ..IconDescriptor::default()
+                        },
+                    );
                 }
-            },
+            }
             1 => {
                 if let Some(subdir) = dir.join("default") {
-                    return subdir.find(icon_name, out, true, IconDescriptor {
-                        theme: Some("default".to_string()),
-                        ..IconDescriptor::default()
-                    });
+                    return subdir.find(
+                        icon_name,
+                        out,
+                        true,
+                        IconDescriptor {
+                            theme: Some("default".to_string()),
+                            ..IconDescriptor::default()
+                        },
+                    );
                 }
             }
             2 => {
@@ -244,34 +253,28 @@ impl IconFinder {
 
         let any_exact_matches = out.iter().any(|v| v.file_name == icon_name);
         if any_exact_matches {
-            out.retain(|location|
-            location.file_name == icon_name
-            );
+            out.retain(|location| location.file_name == icon_name);
         } else {
             warn!("Did not find exact match!!");
         }
 
         out
     }
-
-
 }
 
 pub struct IconLocation {
     pub path: PathBuf,
     pub file_name: String,
-    pub extension: String,
     pub descriptor: IconDescriptor,
 }
 
-#[derive( Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct IconDescriptor {
     pub size: Option<IconSize>,
     // @2x for example
     pub scale: u32,
     pub theme: Option<String>,
 }
-
 
 #[derive(Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct IconDescOrd {
@@ -284,7 +287,7 @@ impl Display for IconDescriptor {
         match self.size {
             None => write!(f, "unknown"),
             Some(IconSize::Scalable) => write!(f, "scalable"),
-            Some(IconSize::Fixed(size)) =>  write!(f, "{size}"),
+            Some(IconSize::Fixed(size)) => write!(f, "{size}"),
         }?;
 
         if self.scale != 1 {
@@ -300,20 +303,19 @@ impl IconDescriptor {
         let size_score = match self.size {
             None => 0,
             Some(IconSize::Scalable) => u16::MAX - 1,
-            Some(IconSize::Fixed(size)) => {
-                if size == target {
-                    u16::MAX
-                } else if size > target {
+            Some(IconSize::Fixed(size)) => match size.cmp(&target) {
+                Ordering::Equal => u16::MAX,
+                Ordering::Greater => {
                     let distance = size - target;
                     u16::MAX - distance
-                } else {
-                    // size < target (target is bigger than the offered size)
+                }
+                Ordering::Less => {
                     let distance = target - size;
                     (u16::MAX / 2) - distance
                 }
-            }
+            },
         };
-       
+
         IconDescOrd {
             size_score,
             scale: self.scale,
@@ -328,16 +330,17 @@ impl IconDescriptor {
             dir_name = left_name.to_string();
         }
 
-
         // Parse size
         if dir_name == "scalable" {
             self.size = Some(IconSize::Scalable);
         }
 
         // 32x32 format
-        if dir_name.chars().filter(|c| c == &'x').count() == 1 && let Some((left, right)) = dir_name.split_once("x") {
-            if let (Ok(left), Ok(right)) = (u16::from_str(left), u16::from_str(right)) {
-                self.size = Some(IconSize::Fixed(left.max(right)));
+        if dir_name.chars().filter(|c| c == &'x').count() == 1 {
+            if let Some((left, right)) = dir_name.split_once("x") {
+                if let (Ok(left), Ok(right)) = (u16::from_str(left), u16::from_str(right)) {
+                    self.size = Some(IconSize::Fixed(left.max(right)));
+                }
             }
         }
 
@@ -345,7 +348,7 @@ impl IconDescriptor {
         if let Ok(size) = u16::from_str(&dir_name) {
             self.size = Some(IconSize::Fixed(size));
         }
-        
+
         if self.theme.is_none() {
             self.theme = Some(dir_name);
         }
@@ -366,5 +369,5 @@ impl Default for IconDescriptor {
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum IconSize {
     Scalable,
-    Fixed(u16)
+    Fixed(u16),
 }

@@ -3,10 +3,10 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fs::{read_to_string, write};
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::error;
 
-pub struct Config<V: Serialize + DeserializeOwned + Default> {
+pub struct Config<V> {
     value: Option<V>,
     path: PathBuf,
 }
@@ -21,19 +21,35 @@ impl<V: Serialize + DeserializeOwned + Default> Config<V> {
             let v = self.load_from_file()?;
             self.value = Some(v);
         }
-   
+
         Ok(self.value.as_mut().unwrap())
     }
-    
-    pub fn flush_changes(&mut self) {
+
+    pub fn flush_changes(&mut self) -> eyre::Result<()>  {
         if let Some(value) = &self.value {
-            let string = serde_json::to_string(value).unwrap();
-            write(&self.path, string).unwrap();
+            Self::write_file(&self.path, value)?;
         }
+        
+        Ok(())
     }
 
     fn load_from_file(&mut self) -> eyre::Result<V> {
-        let string = match read_to_string(&self.path) {
+        Self::read_file(&self.path)
+    }
+  
+}
+
+impl<V: Serialize> Config<V> {
+    pub fn write_file(path: &Path, value: &V) -> eyre::Result<()> {
+        let string = serde_json::to_string(&value)?;
+        write(path, string)?;
+        Ok(())
+    }
+}
+
+impl<V: DeserializeOwned + Default> Config<V> {
+    pub fn read_file(path: &Path) -> eyre::Result<V> {
+        let string = match read_to_string(&path) {
             Ok(value) => value,
             Err(error) => {
                 if error.kind() == ErrorKind::NotFound {
@@ -44,13 +60,10 @@ impl<V: Serialize + DeserializeOwned + Default> Config<V> {
             }
         };
 
-        let value: V = match serde_json::from_str(&string) {
-            Ok(value) => value,
-            Err(error) => {
-                error!("Could not load config file: {error:?}");
-                V::default()
-            }
-        };
+        let value: V = serde_json::from_str(&string).unwrap_or_else(|error| {
+            error!("Could not load config file: {error:?}");
+            V::default()
+        });
 
         Ok(value)
     }

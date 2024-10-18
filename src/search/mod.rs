@@ -7,19 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs::create_dir_all;
 use std::ops::{Sub};
-use std::path::{ PathBuf};
+use std::path::{Path};
+use eyre::Context;
 use tracing::info;
-
-#[derive(Serialize, Deserialize, Default)]
-pub struct SearchData {
-    pub uses: Vec<UseEntry>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct UseEntry {
-    pub id: ShortcutId,
-    pub at: DateTime<Utc>,
-}
 
 pub struct SearchEngine {
     matcher: SkimMatcherV2,
@@ -30,50 +20,52 @@ pub struct SearchEngine {
 }
 
 impl SearchEngine {
-    pub fn new(dir: PathBuf) -> Self {
-        create_dir_all(&dir).unwrap();
+    pub fn new(dir: &Path) -> eyre::Result<Self> {
+        create_dir_all(dir).wrap_err("Failed to create dir")?;
         let mut config = Config::new(dir.join("uses.json"));
-        let data: &mut SearchData = config.get_mut().unwrap();
+        let data: &mut SearchData = config.get_mut().wrap_err("Failed to read config")?;
 
         let mut uses = HashMap::new();
         for entry in &data.uses {
             *uses.entry(entry.id.clone()).or_default() += 1;
         }
 
-        Self {
+        Ok(Self {
             matcher: SkimMatcherV2::default().score_config(SkimScoreConfig {
                 ..SkimScoreConfig::default()
             }),
             uses_max: *uses.values().max().unwrap_or(&1),
             uses,
             config,
-        }
+        })
     }
 
-    pub fn record_use(&mut self, id: ShortcutId) {
-        let data = self.config.get_mut().unwrap();
+    pub fn record_use(&mut self, id: ShortcutId) -> eyre::Result<()>{
+        let data = self.config.get_mut().wrap_err("Failed to load config")?;
 
         // Add new entry
         let now = Local::now().to_utc();
         data.uses.push(UseEntry { id, at: now });
 
         // Remove old
-        let removed_old = data
+        let start_len = data.uses.len();
+        data
             .uses
-            .extract_if(|e| e.at < now.sub(TimeDelta::days(30)))
-            .count();
+            .retain(|e| e.at>= now.sub(TimeDelta::days(30)));
+
+        let removed_old = start_len - data.uses.len();
         if removed_old > 0 {
-            info!("Purged {removed_old} old entries.")
+            info!("Purged {removed_old} old entries.");
         }
 
         // Flush config
-        self.config.flush_changes();
+        self.config.flush_changes().wrap_err("Failed to save config")?;
+        Ok(())
     }
 
     pub fn get_popularity(&self, id: &ShortcutId) -> f32 {
         let uses = self.uses.get(id).copied().unwrap_or(0);
-        let popularity = uses as f32 / self.uses_max as f32;
-        popularity
+        uses as f32 / self.uses_max as f32
     }
 
     pub fn score(&self, model: &Shortcut, query: &SearchQuery) -> SearchScore {
@@ -225,6 +217,17 @@ impl SearchQuery {
             text: query,
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct SearchData {
+    pub uses: Vec<UseEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct UseEntry {
+    pub id: ShortcutId,
+    pub at: DateTime<Utc>,
 }
 
 #[derive(Default)]
