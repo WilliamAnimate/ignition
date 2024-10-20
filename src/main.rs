@@ -2,6 +2,11 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::apps::icons::AppIconManager;
+use crate::apps::{App, AppId, AppManager};
+use ui::colors::Colors;
+use ui::fonts::load_fonts;
+use crate::search::{SearchEngine, SearchQuery, SearchResult, SearchResultEntry};
 use dirs::{cache_dir, data_local_dir};
 use eframe::egui::scroll_area::ScrollBarVisibility;
 use eframe::egui::style::{Spacing, TextCursorStyle};
@@ -14,7 +19,7 @@ use eframe::egui::{
 use eframe::emath::easing;
 use eframe::epaint::text::TextWrapping;
 use eframe::epaint::FontFamily;
-use eframe::{egui, App, NativeOptions};
+use eframe::{egui, NativeOptions};
 use egui_extras::install_image_loaders;
 use eyre::{Context, ContextCompat};
 use fork::{daemon, Fork};
@@ -24,18 +29,10 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-use crate::colors::Colors;
-use crate::fonts::load_fonts;
-use crate::icons::IconManager;
-use crate::search::{SearchEngine, SearchQuery};
-use crate::shortcuts::{Shortcut, ShortcutId, ShortcutManager};
-
-mod colors;
+mod apps;
 mod config;
-mod fonts;
-mod icons;
 mod search;
-mod shortcuts;
+mod ui;
 
 struct ApplicationLaunch {
     exec: String,
@@ -62,14 +59,14 @@ fn main() -> eyre::Result<()> {
             .init();
 
         info!("Initializing core");
+        let apps = AppManager::new().wrap_err("Failed to initialize ShortcutManager")?;
         let mut icons =
-            IconManager::new(&cache_dir).wrap_err("Failed to initialize IconManager")?;
+            AppIconManager::new(&cache_dir).wrap_err("Failed to initialize IconManager")?;
         let search =
             SearchEngine::new(&data_local_dir).wrap_err("Failed to initialize SearchEngine")?;
-        let shortcuts = ShortcutManager::new().wrap_err("Failed to initialize ShortcutManager")?;
 
         info!("Loading icons");
-        for shortcut in shortcuts.shortcuts.values() {
+        for shortcut in apps.applications.values() {
             icons.prepare_icon(shortcut);
         }
         icons.save().wrap_err("Failed to save icons")?;
@@ -83,6 +80,8 @@ fn main() -> eyre::Result<()> {
                 viewport: ViewportBuilder {
                     transparent: Some(true),
                     decorations: Some(false),
+                    fullscreen: Some(false),
+                    maximized: Some(false),
                     window_type: Some(X11WindowType::Utility),
                     ..ViewportBuilder::default()
                 },
@@ -109,25 +108,23 @@ fn main() -> eyre::Result<()> {
                 });
                 context.egui_ctx.set_fonts(load_fonts());
                 install_image_loaders(&context.egui_ctx);
-                let rankings: Vec<ShortcutId> = shortcuts.shortcuts.keys().cloned().collect();
                 let mut application = Application {
                     start: Some(start),
                     to_launch: to_launch_c,
-                    shortcuts,
-                    last_top: rankings.first().cloned().unwrap(),
+                    apps,
+                    last_top: AppId::default(),
                     last_top_at: Instant::now(),
-                    rankings,
-                    query: "".to_string(),
-                    icons,
+                    search_query: "".to_string(),
+                    search_result: SearchResult::default(),
+                    app_icons: icons,
                     selected: None,
                     search,
-                    block_case: true,
-                    has_focused: false,
+                    case_sensitive: false,
+                    has_window_ever_received_focus: false,
                     mouse_lock_from: Instant::now(),
                     first_focused_at: Instant::now(),
                 };
                 application.search("");
-                application.sort_rankings();
 
                 Ok(Box::new(application))
             }),
@@ -181,25 +178,32 @@ pub fn draw_icon(painter: &Painter, icon: u32, pos: Pos2, size: f32, color: Colo
 }
 
 pub struct Application {
+    /// This is used to measure how long the application took to launch
     start: Option<Instant>,
+    /// This is the mutex holding what application we will launch
     to_launch: Arc<Mutex<Option<ApplicationLaunch>>>,
 
-    shortcuts: ShortcutManager,
-    icons: IconManager,
-    search: SearchEngine,
-    rankings: Vec<ShortcutId>,
-    query: String,
+    apps: AppManager,
+    app_icons: AppIconManager,
 
-    last_top: ShortcutId,
+    search: SearchEngine,
+    search_query: String,
+    search_result: SearchResult,
+
+    last_top: AppId,
     last_top_at: Instant,
+    
+    /// Then you type on the keyboard, it will freeze the mouse for a given duration.
     mouse_lock_from: Instant,
 
     selected: Option<usize>,
 
-    has_focused: bool,
+    case_sensitive: bool,
+    
+    // These are to prevent the window from getting instantly closed on launch.
+    // When your mouse is not instantly on the window.
+    has_window_ever_received_focus: bool,
     first_focused_at: Instant,
-
-    block_case: bool,
 }
 
 const ENTRY_HEIGHT: f32 = 32.0;
@@ -208,40 +212,26 @@ const IMAGE_SIZE: f32 = 24.0;
 impl Application {
     pub fn search(&mut self, query: &str) {
         let mut query = query.to_string();
-        if self.block_case {
+        if !self.case_sensitive {
             query = query.to_lowercase();
         }
         self.mouse_lock_from = Instant::now();
 
         let start = Instant::now();
 
-        let search_query = SearchQuery::from(query.to_string());
-        for entry in &mut self.shortcuts.shortcuts.values_mut() {
-            let search = self.search.score(entry, &search_query);
-            entry.score = search;
-        }
-
-        self.sort_rankings();
-
-        debug!("Search \"{query}\" took {:?}", start.elapsed());
-    }
-
-    fn sort_rankings(&mut self) {
-        let mut scores: Vec<&Shortcut> = self.shortcuts.shortcuts.values().collect();
-        scores.sort_by(|e0, e1| {
-            e1.score
-                .score
-                .total_cmp(&e0.score.score)
-                .then(e0.name.cmp(&e1.name))
-        });
-        let rankings = scores.into_iter().map(|v| v.id.clone()).collect();
-        self.rankings = rankings;
-
-        let top = self.rankings.first().cloned().unwrap();
+        let results = self.search.search(query.to_string(), &self.apps);
+        let top = results
+            .entries
+            .first()
+            .map(|v| v.id.clone())
+            .unwrap_or_default();
         if self.last_top != top {
             self.last_top = top;
             self.last_top_at = Instant::now();
         }
+        self.search_result = results;
+
+        debug!("Search \"{query}\" took {:?}", start.elapsed());
     }
 
     pub fn draw_search_bar(&mut self, ui: &mut Ui) {
@@ -251,9 +241,9 @@ impl Application {
         let p = ui.painter();
 
         let mut message: Option<(String, Color32)> = None;
-        if !self.block_case {
+        if self.case_sensitive {
             message = Some(("Case-sensitive".to_string(), Colors::PEACH));
-        } else if self.query.chars().any(|v| v.is_uppercase()) {
+        } else if self.search_result.query.chars().any(|v| v.is_uppercase()) {
             message = Some(("CapsLock Ignored".to_string(), Colors::YELLOW));
         }
 
@@ -279,7 +269,7 @@ impl Application {
         );
 
         let font = FontId::new(18.0, FontFamily::Proportional);
-        let output = TextEdit::singleline(&mut self.query)
+        let output = TextEdit::singleline(&mut self.search_query)
             .frame(false)
             .vertical_align(Align::Center)
             .text_color(Colors::TEXT)
@@ -298,7 +288,7 @@ impl Application {
         });
 
         if output.response.changed() {
-            let query = &self.query.clone();
+            let query = &self.search_query.clone();
             if query.trim().is_empty() {
                 self.selected = None;
             } else {
@@ -317,7 +307,7 @@ impl Application {
             Colors::TEXT,
         );
 
-        if self.query.is_empty() {
+        if self.search_query.is_empty() {
             p.text(
                 output.text_clip_rect.left_center(),
                 Align2::LEFT_CENTER,
@@ -329,7 +319,7 @@ impl Application {
     }
     pub fn draw_entries(&mut self, ui: &mut Ui) {
         let row_height = ENTRY_HEIGHT + ENTRY_SPACING;
-        let num_rows = self.rankings.len();
+        let num_rows = self.search_result.entries.len();
 
         let rect = ui.max_rect();
         ScrollArea::vertical()
@@ -402,17 +392,16 @@ impl Application {
                     );
                 }
                 let top_score = self
-                    .rankings
+                    .search_result
+                    .entries
                     .first()
-                    .and_then(|v| self.shortcuts.shortcuts.get(v))
                     .map(|v| v.score.score)
                     .unwrap_or(1.0);
                 //let mut selected_rect = None;
 
                 let mut hit_boxes = Vec::new();
                 for i in first_item..last_item {
-                    let id = &self.rankings[i];
-                    let entry = &self.shortcuts.shortcuts[id];
+                    let entry = &self.search_result.entries[i];
                     let x = min_rect.left();
                     let y = min_rect.top() + i as f32 * row_height + 9.0;
 
@@ -428,8 +417,8 @@ impl Application {
                     };
 
                     let mut opacity =
-                        0.4 + (entry.score.score.max(0.01) / top_score.max(0.01)) * 0.6;
-                    if self.query.is_empty() {
+                        0.4 + (entry.score.score.max(0.001) / top_score.max(0.001)) * 0.6;
+                    if self.search_query.is_empty() {
                         opacity = 1.0;
                     }
 
@@ -451,7 +440,7 @@ impl Application {
                         entry,
                     );
 
-                    hit_boxes.push((panel_rect, id.clone()));
+                    hit_boxes.push((panel_rect, entry.id.clone()));
                     used_rect = used_rect.union(rect);
                 }
 
@@ -462,7 +451,7 @@ impl Application {
                                 let rect = rect.expand2(Vec2::new(0.0, ENTRY_SPACING / 2.0));
                                 if rect.contains(pos) {
                                     let Some((id, _)) =
-                                        self.rankings.iter().enumerate().find(|(_, v)| *v == id)
+                                        self.search_result.entries.iter().enumerate().find(|(_, v)| &v.id == id)
                                     else {
                                         continue;
                                     };
@@ -484,22 +473,26 @@ impl Application {
                 ui.allocate_rect(used_rect, Sense::click());
             });
     }
+
     pub fn draw_entry(
         &self,
         ui: &mut Ui,
         mut rect: Rect,
         selected: f32,
         opacity: f32,
-        entry: &Shortcut,
+        entry: &SearchResultEntry,
     ) -> Rect {
         let bg_rect = rect.expand(3.0);
+        let Some(app) = self.apps.applications.get(&entry.id) else {
+            return bg_rect;
+        };
 
         rect.max.x -= 4.0;
         rect.min.x += 10.0;
         rect = rect.shrink2(Vec2::new(1.0, 0.0));
 
         let image_width = rect.height();
-        if let Some(icon) = self.icons.read_icon(&entry.id) {
+        if let Some(icon) = self.app_icons.read_icon(&entry.id) {
             let string = format!("file://{}", icon.to_str().unwrap());
             let image = egui::Image::from_uri(string)
                 .tint(Color32::WHITE.gamma_multiply(opacity))
@@ -526,7 +519,7 @@ impl Application {
                 ..LayoutJob::default()
             };
 
-            for (i, char) in entry.name.chars().enumerate() {
+            for (i, char) in app.name.chars().enumerate() {
                 let value = entry.score.indices.get(&i).unwrap_or(&0.0);
                 let value = if *value > 0.0 { *value } else { 0.0 };
                 let text_color = text_color.lerp_to_gamma(Colors::ROSEWATER, value);
@@ -559,7 +552,7 @@ impl Application {
             //    )
             //}
 
-            if let Some(comment) = entry.comment.as_ref() {
+            if let Some(comment) = app.comment.as_ref() {
                 if selected > 0.0 {
                     job.append(
                         &format!(" {comment}"),
@@ -587,18 +580,24 @@ impl Application {
         let Some(selected) = self.selected else {
             return;
         };
-        let id = &self.rankings[selected];
-        let shortcut = self.shortcuts.shortcuts.get(id).unwrap();
+        let Some(entry) = self.search_result.entries.get(selected) else {
+            return;
+        };
+
+        let id = &entry.id;
+        let Some(app) = self.apps.applications.get(id) else {
+            return;
+        };
 
         let duration = self.last_top_at.elapsed();
         if selected == 0 && duration < Duration::from_millis(150) {
             warn!(
                 "Blocked launch of {} because it changed too quickly ({duration:?} < 150ms)",
-                shortcut.name
+                app.name
             );
             return;
         }
-        let buf = shortcut.path.canonicalize().unwrap();
+        let buf = app.path.canonicalize().unwrap();
         let file_path = buf.to_str().unwrap();
         let launch = ApplicationLaunch {
             exec: file_path.to_string(),
@@ -610,7 +609,7 @@ impl Application {
     }
 }
 
-impl App for Application {
+impl eframe::App for Application {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         if let Some(start) = self.start.take() {
             info!("Initialized in {:?}", start.elapsed());
@@ -689,7 +688,7 @@ impl App for Application {
                     }
 
                     if let Some(value) = &mut self.selected {
-                        *value = (*value).clamp(0, self.rankings.len() - 1);
+                        *value = (*value).clamp(0, self.search_result.entries.len() - 1);
                     }
                 });
 
@@ -697,10 +696,10 @@ impl App for Application {
                 self.draw_entries(ui);
 
                 ui.input(|input| {
-                    if self.query.trim().is_empty() {
-                        self.block_case = true;
+                    if self.search_query.trim().is_empty() {
+                        self.case_sensitive = false;
                     } else if input.modifiers.shift && !input.keys_down.is_empty() {
-                        self.block_case = false;
+                        self.case_sensitive = true;
                     }
                 });
             });
@@ -712,15 +711,15 @@ impl App for Application {
             Stroke::new(2.0, Colors::SURFACE0),
         );
 
-        if focused && !self.has_focused {
-            self.has_focused = true;
+        if focused && !self.has_window_ever_received_focus {
+            self.has_window_ever_received_focus = true;
             self.first_focused_at = Instant::now();
         }
 
         let is_long_enough = self.first_focused_at.elapsed().as_secs_f32() > 0.2;
         if self.to_launch.lock().unwrap().is_some()
             || should_close
-            || (!focused && self.has_focused && is_long_enough)
+            || (!focused && self.has_window_ever_received_focus && is_long_enough)
         {
             let ctx = ctx.clone();
             std::thread::spawn(move || {

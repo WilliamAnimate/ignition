@@ -1,38 +1,103 @@
-use dirs::home_dir;
 use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use dirs::home_dir;
 use tracing::{debug, info, warn};
 use xdg::BaseDirectories;
+pub struct IconFinder {
+    dirs: Vec<CachedDir>,
+}
 
-fn icon_theme_base_paths() -> Vec<PathBuf> {
-    let home_icon_dir = home_dir().expect("No $HOME directory").join(".icons");
-    let mut data_dirs: Vec<_> = BaseDirectories::new()
-        .map(|bd| {
-            let mut data_dirs: Vec<_> = bd
-                .get_data_dirs()
+impl IconFinder {
+    pub fn new() -> IconFinder {
+        warn!("Creating IconFinder, this means that we are going to be looking for icons on your system");
+        warn!("This may take a while.");
+        IconFinder {
+            dirs: icon_theme_base_paths()
                 .into_iter()
-                .flat_map(|p| [p.join("icons"), p.join("pixmaps")])
-                .collect();
-            let data_home = bd.get_data_home();
-            data_dirs.push(data_home.join("icons"));
-            data_dirs.push(data_home.join("pixmaps"));
-            data_dirs
-        })
-        .unwrap_or_default();
-    data_dirs.push(home_icon_dir);
-    for bufg in &data_dirs {
-        info!("Found {bufg:?}");
+                .map(|v| {
+                    debug!("SEARCHING IN {v:?}");
+                    CachedDir::visit(&v).unwrap()
+                })
+                .collect(),
+        }
     }
-    data_dirs.into_iter().filter(|p| p.exists()).collect()
+
+    fn start_find(
+        dir: &mut CachedDir,
+        icon_name: &str,
+        out: &mut Vec<IconLocation>,
+        step: usize,
+    ) -> u32 {
+        match step {
+            0 => {
+                if let Some(subdir) = dir.join("hicolor") {
+                    return subdir.find(
+                        icon_name,
+                        out,
+                        true,
+                        IconDescriptor {
+                            theme: Some("hicolor".to_string()),
+                            ..IconDescriptor::default()
+                        },
+                    );
+                }
+            }
+            1 => {
+                if let Some(subdir) = dir.join("default") {
+                    return subdir.find(
+                        icon_name,
+                        out,
+                        true,
+                        IconDescriptor {
+                            theme: Some("default".to_string()),
+                            ..IconDescriptor::default()
+                        },
+                    );
+                }
+            }
+            2 => {
+                return dir.find(icon_name, out, false, IconDescriptor::default());
+            }
+            3 => {
+                return dir.find(icon_name, out, true, IconDescriptor::default());
+            }
+            _ => {}
+        }
+
+        0
+    }
+    pub fn find(&mut self, icon_name: &str) -> Vec<IconLocation> {
+        let mut out = Vec::new();
+        for i in 0..4 {
+            if i == 3 {
+                warn!("We could not find icon \"{icon_name}\" by simple means.");
+                warn!("Scanning the entire tree. (this may take a while)");
+            }
+            let mut found_any = false;
+            for dir in &mut self.dirs {
+                found_any |= Self::start_find(dir, icon_name, &mut out, i) > 0;
+            }
+
+            if found_any {
+                break;
+            }
+        }
+
+        let any_exact_matches = out.iter().any(|v| v.file_name == icon_name);
+        if any_exact_matches {
+            out.retain(|location| location.file_name == icon_name);
+        } else {
+            warn!("Did not find exact match!!");
+        }
+
+        out
+    }
 }
 
-fn to_string(os: &OsStr) -> String {
-    os.to_str().unwrap().to_string()
-}
 pub struct CachedDir {
     path: PathBuf,
     name: String,
@@ -171,97 +236,6 @@ impl CachedDirEntry {
     }
 }
 
-pub struct IconFinder {
-    dirs: Vec<CachedDir>,
-}
-
-impl IconFinder {
-    pub fn new() -> IconFinder {
-        warn!("Creating IconFinder, this means that we are going to be looking for icons on your system");
-        warn!("This may take a while.");
-        IconFinder {
-            dirs: icon_theme_base_paths()
-                .into_iter()
-                .map(|v| {
-                    debug!("SEARCHING IN {v:?}");
-                    CachedDir::visit(&v).unwrap()
-                })
-                .collect(),
-        }
-    }
-
-    fn start_find(
-        dir: &mut CachedDir,
-        icon_name: &str,
-        out: &mut Vec<IconLocation>,
-        step: usize,
-    ) -> u32 {
-        match step {
-            0 => {
-                if let Some(subdir) = dir.join("hicolor") {
-                    return subdir.find(
-                        icon_name,
-                        out,
-                        true,
-                        IconDescriptor {
-                            theme: Some("hicolor".to_string()),
-                            ..IconDescriptor::default()
-                        },
-                    );
-                }
-            }
-            1 => {
-                if let Some(subdir) = dir.join("default") {
-                    return subdir.find(
-                        icon_name,
-                        out,
-                        true,
-                        IconDescriptor {
-                            theme: Some("default".to_string()),
-                            ..IconDescriptor::default()
-                        },
-                    );
-                }
-            }
-            2 => {
-                return dir.find(icon_name, out, false, IconDescriptor::default());
-            }
-            3 => {
-                return dir.find(icon_name, out, true, IconDescriptor::default());
-            }
-            _ => {}
-        }
-
-        0
-    }
-    pub fn find(&mut self, icon_name: &str) -> Vec<IconLocation> {
-        let mut out = Vec::new();
-        for i in 0..4 {
-            if i == 3 {
-                warn!("We could not find icon \"{icon_name}\" by simple means.");
-                warn!("Scanning the entire tree. (this may take a while)");
-            }
-            let mut found_any = false;
-            for dir in &mut self.dirs {
-                found_any |= Self::start_find(dir, icon_name, &mut out, i) > 0;
-            }
-
-            if found_any {
-                break;
-            }
-        }
-
-        let any_exact_matches = out.iter().any(|v| v.file_name == icon_name);
-        if any_exact_matches {
-            out.retain(|location| location.file_name == icon_name);
-        } else {
-            warn!("Did not find exact match!!");
-        }
-
-        out
-    }
-}
-
 pub struct IconLocation {
     pub path: PathBuf,
     pub file_name: String,
@@ -370,4 +344,30 @@ impl Default for IconDescriptor {
 pub enum IconSize {
     Scalable,
     Fixed(u16),
+}
+
+fn icon_theme_base_paths() -> Vec<PathBuf> {
+    let home_icon_dir = home_dir().expect("No $HOME directory").join(".icons");
+    let mut data_dirs: Vec<_> = BaseDirectories::new()
+        .map(|bd| {
+            let mut data_dirs: Vec<_> = bd
+                .get_data_dirs()
+                .into_iter()
+                .flat_map(|p| [p.join("icons"), p.join("pixmaps")])
+                .collect();
+            let data_home = bd.get_data_home();
+            data_dirs.push(data_home.join("icons"));
+            data_dirs.push(data_home.join("pixmaps"));
+            data_dirs
+        })
+        .unwrap_or_default();
+    data_dirs.push(home_icon_dir);
+    for bufg in &data_dirs {
+        info!("Found {bufg:?}");
+    }
+    data_dirs.into_iter().filter(|p| p.exists()).collect()
+}
+
+fn to_string(os: &OsStr) -> String {
+    os.to_str().unwrap().to_string()
 }

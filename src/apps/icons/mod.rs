@@ -1,8 +1,7 @@
 mod finder;
 
+use crate::apps::icons::finder::IconFinder;
 use crate::config::Config;
-use crate::icons::finder::IconFinder;
-use crate::shortcuts::{Shortcut, ShortcutId};
 use eyre::{Context, ContextCompat};
 use ico::IconDir;
 use image::imageops::FilterType;
@@ -15,29 +14,31 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{create_dir_all, read_to_string, remove_file};
 use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
+use crate::apps::{App, AppId};
 
 const PREFERRED_ICON_SIZE: u16 = 32;
 const PREFERRED_ICON_SIZE_U32: u32 = PREFERRED_ICON_SIZE as u32;
 
-pub struct IconManager {
+/// The AppIconManager is responsible for finding and displaying application icons.
+pub struct AppIconManager {
     icon_image_dir: PathBuf,
     model_path: PathBuf,
     model: IconsModel,
 
-    seen_icons: HashSet<ShortcutId>,
+    seen_icons: HashSet<AppId>,
 
     finder: Option<IconFinder>,
 }
 
-impl IconManager {
-    pub fn new(dir: &Path) -> eyre::Result<IconManager> {
+impl AppIconManager {
+    pub fn new(dir: &Path) -> eyre::Result<AppIconManager> {
         let cache_dir = dir.join("icons");
         create_dir_all(&cache_dir).wrap_err("Failed to create icons dir")?;
 
         let model_path = cache_dir.join("icons.json");
         let model = Config::<IconsModel>::read_file(&model_path).wrap_err("Failed to read icon")?;
 
-        Ok(IconManager {
+        Ok(AppIconManager {
             icon_image_dir: cache_dir,
             model_path,
             model,
@@ -46,26 +47,26 @@ impl IconManager {
         })
     }
 
-    pub fn read_icon(&self, id: &ShortcutId) -> Option<PathBuf> {
+    pub fn read_icon(&self, id: &AppId) -> Option<PathBuf> {
         let model = self.model.values.get(id)?;
         let path = self.icon_path(model.export_id?);
         path.canonicalize().ok()
     }
 
-    pub fn prepare_icon(&mut self, shortcut: &Shortcut) {
-        let Some(source) = shortcut.icon.clone() else {
+    pub fn prepare_icon(&mut self, app: &App) {
+        let Some(source) = app.icon.clone() else {
             return;
         };
-        self.seen_icons.insert(shortcut.id.clone());
+        self.seen_icons.insert(app.id.clone());
 
-        if let Some(icon) = self.model.values.get(&shortcut.id) {
+        if let Some(icon) = self.model.values.get(&app.id) {
             if icon.source_location == source {
                 // Skip because they are the same
                 return;
             }
         }
 
-        info!("Compiling icon {}", shortcut.name);
+        info!("Compiling icon {}", app.name);
         let source_path = PathBuf::from(&source);
         let icon_path = if !source_path.is_absolute() {
             let finder = self.finder.get_or_insert_with(IconFinder::new);
@@ -93,14 +94,14 @@ impl IconManager {
         {
             Ok(icon) => Some(icon),
             Err(error) => {
-                error!("failed to load icon for {}", shortcut.name);
+                error!("failed to load icon for {}", app.name);
                 error!("{error:?}");
                 None
             }
         };
 
         self.model.values.insert(
-            shortcut.id.clone(),
+            app.id.clone(),
             IconEntryModel {
                 source_location: source,
                 export_id,
@@ -209,7 +210,7 @@ impl IconManager {
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct IconsModel {
-    values: HashMap<ShortcutId, IconEntryModel>,
+    values: HashMap<AppId, IconEntryModel>,
 }
 
 #[derive(Serialize, Deserialize)]

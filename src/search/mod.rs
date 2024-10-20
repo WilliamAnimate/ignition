@@ -1,20 +1,34 @@
+use crate::apps::{App, AppId, AppManager};
 use crate::config::Config;
-use crate::shortcuts::{Shortcut, ShortcutId};
 use chrono::{DateTime, Local, TimeDelta, Utc};
 use eframe::egui::TextBuffer;
+use eyre::Context;
 use fuzzy_matcher::skim::{SkimMatcherV2, SkimScoreConfig};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::create_dir_all;
-use std::ops::{Sub};
-use std::path::{Path};
-use eyre::Context;
+use std::ops::Sub;
+use std::path::Path;
 use tracing::info;
 
+#[derive(Default)]
+pub struct SearchResult {
+    pub query: String,
+    pub entries: Vec<SearchResultEntry>,
+}
+
+pub struct SearchResultEntry {
+    pub id: AppId,
+    pub score: SearchScore,
+}
+
 pub struct SearchEngine {
+    // Searching
     matcher: SkimMatcherV2,
 
-    uses: HashMap<ShortcutId, u32>,
+    // Persistence
+    uses: HashMap<AppId, u32>,
     uses_max: u32,
     config: Config<SearchData>,
 }
@@ -40,7 +54,7 @@ impl SearchEngine {
         })
     }
 
-    pub fn record_use(&mut self, id: ShortcutId) -> eyre::Result<()>{
+    pub fn record_use(&mut self, id: AppId) -> eyre::Result<()> {
         let data = self.config.get_mut().wrap_err("Failed to load config")?;
 
         // Add new entry
@@ -49,9 +63,7 @@ impl SearchEngine {
 
         // Remove old
         let start_len = data.uses.len();
-        data
-            .uses
-            .retain(|e| e.at>= now.sub(TimeDelta::days(30)));
+        data.uses.retain(|e| e.at >= now.sub(TimeDelta::days(30)));
 
         let removed_old = start_len - data.uses.len();
         if removed_old > 0 {
@@ -59,37 +71,72 @@ impl SearchEngine {
         }
 
         // Flush config
-        self.config.flush_changes().wrap_err("Failed to save config")?;
+        self.config
+            .flush_changes()
+            .wrap_err("Failed to save config")?;
         Ok(())
     }
 
-    pub fn get_popularity(&self, id: &ShortcutId) -> f32 {
-        let uses = self.uses.get(id).copied().unwrap_or(0);
-        uses as f32 / self.uses_max as f32
+    pub fn search(&self, query: String, apps: &AppManager) -> SearchResult {
+        let search_query = SearchQuery::from(query);
+
+        let mut results = Vec::new();
+        for entry in apps.applications.values() {
+            let score = self.score(entry, &search_query);
+            results.push(SearchResultEntry {
+                id: entry.id.clone(),
+                score,
+            })
+        }
+
+        #[derive(PartialEq)]
+        struct SearchOrderKey<'a> {
+            score: f32,
+            name: &'a str,
+        }
+        impl Eq for SearchOrderKey<'_> {}
+        impl PartialOrd for SearchOrderKey<'_> {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        impl Ord for SearchOrderKey<'_> {
+            fn cmp(&self, other: &Self) -> Ordering {
+                other
+                    .score
+                    .total_cmp(&self.score)
+                    .then(self.name.cmp(other.name))
+            }
+        }
+        results.sort_unstable_by_key(|v| SearchOrderKey {
+            score: v.score.score,
+            name: apps.applications.get(&v.id).map(|v| &*v.name).unwrap_or(""),
+        });
+
+        SearchResult {
+            query: search_query.text,
+            entries: results,
+        }
     }
 
-    pub fn score(&self, model: &Shortcut, query: &SearchQuery) -> SearchScore {
+    pub fn score(&self, app: &App, query: &SearchQuery) -> SearchScore {
         let mut result = SearchScore {
             score: 0.0,
             indices: Default::default(),
         };
 
-        result.add(50.0, self.score_string(query, &model.name, true));
+        result.add(50.0, self.score_string(query, &app.name, true));
         result.add(
             0.2,
-            self.score_string(query, &model.comment.clone().unwrap_or_default(), false),
+            self.score_string(query, &app.comment.clone().unwrap_or_default(), false),
         );
         result.add(
             1.0,
-            self.score_string(
-                query,
-                &model.generic_name.clone().unwrap_or_default(),
-                false,
-            ),
+            self.score_string(query, &app.generic_name.clone().unwrap_or_default(), false),
         );
 
         // Go through keywords
-        let keywords = model.keywords.clone().unwrap_or_default();
+        let keywords = app.keywords.clone().unwrap_or_default();
         let split: Vec<&str> = keywords.split(";").collect();
         for &keyword in &split {
             result.add(
@@ -99,22 +146,39 @@ impl SearchEngine {
         }
 
         //
-        let length_penalty = model.name.len() as f32 * 0.003 * result.score;
+        let length_penalty = app.name.len() as f32 * 0.003 * result.score;
         if result.score > length_penalty {
             result.score -= length_penalty;
         }
 
-        if model.penalized {
+        if Self::is_penalized(app) {
             result.score *= 0.9;
         }
 
-        
-        let popularity = self.get_popularity(&model.id);
+        let popularity = self.get_popularity(&app.id);
         result.score *= 1.0 + popularity * 0.5;
         result.score += popularity;
-        
+
         result
     }
+
+    pub fn get_popularity(&self, id: &AppId) -> f32 {
+        let uses = self.uses.get(id).copied().unwrap_or(0);
+        uses as f32 / self.uses_max as f32
+    }
+
+    fn is_penalized(app: &App) -> bool {
+        if app.terminal {
+            return true;
+        }
+
+        if let Some(categories) = &app.categories {
+            return categories.iter().any(|v| v == "Settings");
+        }
+
+        false
+    }
+
     fn score_string(&self, query: &SearchQuery, str: &str, with_pos: bool) -> SearchResultPart {
         let mut part = SearchResultPart {
             score: 0.0,
@@ -226,7 +290,7 @@ pub struct SearchData {
 
 #[derive(Serialize, Deserialize)]
 pub struct UseEntry {
-    pub id: ShortcutId,
+    pub id: AppId,
     pub at: DateTime<Utc>,
 }
 
