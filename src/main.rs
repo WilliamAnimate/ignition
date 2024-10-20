@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 
 use crate::apps::icons::AppIconManager;
 use crate::apps::{App, AppId, AppManager};
-use ui::colors::Colors;
-use ui::fonts::load_fonts;
 use crate::search::{SearchEngine, SearchQuery, SearchResult, SearchResultEntry};
+use crate::ui::results::{ResultsEvent, ResultsWidget};
+use crate::ui::search_bar::{SearchBarMessage, SearchBarWidget};
 use dirs::{cache_dir, data_local_dir};
 use eframe::egui::scroll_area::ScrollBarVisibility;
 use eframe::egui::style::{Spacing, TextCursorStyle};
@@ -28,6 +28,9 @@ use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+use ui::framework::draw_icon;
+use ui::framework::load_fonts;
+use ui::framework::Colors;
 
 mod apps;
 mod config;
@@ -39,6 +42,15 @@ struct ApplicationLaunch {
 }
 
 fn main() -> eyre::Result<()> {
+    let filter = EnvFilter::from_default_env().add_directive("wgpu_core=error".parse()?);
+    tracing_subscriber::fmt()
+        .compact()
+        .with_env_filter(filter)
+        .with_max_level(LevelFilter::INFO)
+        .finish()
+        .init();
+
+    let start = Instant::now();
     let to_launch: Arc<Mutex<Option<ApplicationLaunch>>> = Arc::new(Mutex::new(None));
 
     let cache_dir = cache_dir()
@@ -48,88 +60,76 @@ fn main() -> eyre::Result<()> {
         .wrap_err("Failed to find data local dir")?
         .join("ignition");
 
-    {
-        let start = Instant::now();
-        let filter = EnvFilter::from_default_env().add_directive("wgpu_core=error".parse()?);
-        tracing_subscriber::fmt()
-            .compact()
-            .with_env_filter(filter)
-            .with_max_level(LevelFilter::INFO)
-            .finish()
-            .init();
+    info!("Initializing core");
+    let apps = AppManager::new().wrap_err("Failed to initialize ShortcutManager")?;
+    let mut icons = AppIconManager::new(&cache_dir).wrap_err("Failed to initialize IconManager")?;
+    let search =
+        SearchEngine::new(&data_local_dir).wrap_err("Failed to initialize SearchEngine")?;
 
-        info!("Initializing core");
-        let apps = AppManager::new().wrap_err("Failed to initialize ShortcutManager")?;
-        let mut icons =
-            AppIconManager::new(&cache_dir).wrap_err("Failed to initialize IconManager")?;
-        let search =
-            SearchEngine::new(&data_local_dir).wrap_err("Failed to initialize SearchEngine")?;
-
-        info!("Loading icons");
-        for shortcut in apps.applications.values() {
-            icons.prepare_icon(shortcut);
-        }
-        icons.save().wrap_err("Failed to save icons")?;
-
-        info!("Initialized core in {:?}", start.elapsed());
-        info!("Launching ui");
-        let to_launch_c = to_launch.clone();
-        eframe::run_native(
-            "Ignition",
-            NativeOptions {
-                viewport: ViewportBuilder {
-                    transparent: Some(true),
-                    decorations: Some(false),
-                    fullscreen: Some(false),
-                    maximized: Some(false),
-                    window_type: Some(X11WindowType::Utility),
-                    ..ViewportBuilder::default()
-                },
-                ..NativeOptions::default()
-            },
-            Box::new(move |context| {
-                context.egui_ctx.set_style(Style {
-                    visuals: Visuals {
-                        window_fill: Color32::TRANSPARENT,
-                        panel_fill: Color32::TRANSPARENT,
-                        window_shadow: Shadow::NONE,
-                        text_cursor: TextCursorStyle {
-                            stroke: Stroke::new(1.0, Colors::OVERLAY0),
-                            blink: false,
-                            ..TextCursorStyle::default()
-                        },
-                        ..Visuals::dark()
-                    },
-                    spacing: Spacing {
-                        item_spacing: Vec2::new(16.0, 4.0),
-                        ..Spacing::default()
-                    },
-                    ..Style::default()
-                });
-                context.egui_ctx.set_fonts(load_fonts());
-                install_image_loaders(&context.egui_ctx);
-                let mut application = Application {
-                    start: Some(start),
-                    to_launch: to_launch_c,
-                    apps,
-                    last_top: AppId::default(),
-                    last_top_at: Instant::now(),
-                    search_query: "".to_string(),
-                    search_result: SearchResult::default(),
-                    app_icons: icons,
-                    selected: None,
-                    search,
-                    case_sensitive: false,
-                    has_window_ever_received_focus: false,
-                    mouse_lock_from: Instant::now(),
-                    first_focused_at: Instant::now(),
-                };
-                application.search("");
-
-                Ok(Box::new(application))
-            }),
-        )?;
+    //icons.clear_icons();
+    info!("Loading icons");
+    for shortcut in apps.applications.values() {
+        icons.prepare_icon(shortcut);
     }
+
+    info!("Initialized core in {:?}", start.elapsed());
+    info!("Launching ui");
+    let to_launch_c = to_launch.clone();
+    eframe::run_native(
+        "Ignition",
+        NativeOptions {
+            viewport: ViewportBuilder {
+                transparent: Some(true),
+                decorations: Some(false),
+                fullscreen: Some(false),
+                maximized: Some(false),
+                window_type: Some(X11WindowType::Utility),
+                ..ViewportBuilder::default()
+            },
+            ..NativeOptions::default()
+        },
+        Box::new(move |context| {
+            context.egui_ctx.set_style(Style {
+                visuals: Visuals {
+                    window_fill: Color32::TRANSPARENT,
+                    panel_fill: Color32::TRANSPARENT,
+                    window_shadow: Shadow::NONE,
+                    text_cursor: TextCursorStyle {
+                        stroke: Stroke::new(1.0, Colors::OVERLAY0),
+                        blink: false,
+                        ..TextCursorStyle::default()
+                    },
+                    ..Visuals::dark()
+                },
+                spacing: Spacing {
+                    item_spacing: Vec2::new(16.0, 4.0),
+                    ..Spacing::default()
+                },
+                ..Style::default()
+            });
+            context.egui_ctx.set_fonts(load_fonts());
+            install_image_loaders(&context.egui_ctx);
+            let mut application = Application {
+                start: Some(start),
+                to_launch: to_launch_c,
+                apps,
+                last_top: AppId::default(),
+                last_top_at: Instant::now(),
+                search_query: "".to_string(),
+                search_result: SearchResult::default(),
+                app_icons: icons,
+                selected: None,
+                search,
+                case_sensitive: false,
+                has_window_ever_received_focus: false,
+                mouse_lock_from: Instant::now(),
+                first_focused_at: Instant::now(),
+            };
+            application.search("");
+
+            Ok(Box::new(application))
+        }),
+    )?;
 
     let quard = to_launch.lock().expect("Failed to lock launch mutex.");
     if let Some(to_launch) = &*quard {
@@ -159,23 +159,6 @@ fn main() -> eyre::Result<()> {
     }
     Ok(())
 }
-pub fn draw_icon(painter: &Painter, icon: u32, pos: Pos2, size: f32, color: Color32) {
-    let icon = char::from_u32(icon).expect("Could not parse icon char");
-    let text = icon.to_string();
-
-    let font_id = FontId::new(size, FontFamily::Name("Icons".into()));
-    let job = LayoutJob::simple(text, font_id.clone(), color, f32::INFINITY);
-    let arc = painter.ctx().fonts(|fonts| fonts.layout_job(job));
-
-    let mut rect = Align2::CENTER_CENTER.anchor_rect(Rect::from_min_size(pos, arc.rect.size()));
-
-    let data = painter
-        .ctx()
-        .fonts(|fonts| fonts.glyph_width(&font_id, icon));
-
-    rect.set_height(data);
-    painter.galley(rect.min, arc, color);
-}
 
 pub struct Application {
     /// This is used to measure how long the application took to launch
@@ -192,14 +175,14 @@ pub struct Application {
 
     last_top: AppId,
     last_top_at: Instant,
-    
+
     /// Then you type on the keyboard, it will freeze the mouse for a given duration.
     mouse_lock_from: Instant,
 
     selected: Option<usize>,
 
     case_sensitive: bool,
-    
+
     // These are to prevent the window from getting instantly closed on launch.
     // When your mouse is not instantly on the window.
     has_window_ever_received_focus: bool,
@@ -235,59 +218,45 @@ impl Application {
     }
 
     pub fn draw_search_bar(&mut self, ui: &mut Ui) {
-        let mut rect = ui.clip_rect();
-        rect.set_height(64.0);
-
-        let p = ui.painter();
-
-        let mut message: Option<(String, Color32)> = None;
+        let mut messages = Vec::new();
         if self.case_sensitive {
-            message = Some(("Case-sensitive".to_string(), Colors::PEACH));
-        } else if self.search_result.query.chars().any(|v| v.is_uppercase()) {
-            message = Some(("CapsLock Ignored".to_string(), Colors::YELLOW));
+            messages.push(SearchBarMessage {
+                text: "Case-sensitive".to_string(),
+                color: Colors::PEACH,
+            });
+        } else if self.search_query.chars().any(|v| v.is_uppercase()) {
+            messages.push(SearchBarMessage {
+                text: "CapsLock Ignored".to_string(),
+                color: Colors::YELLOW,
+            });
         }
 
-        if let Some((text, color)) = message {
-            let text_rect = p.text(
-                rect.shrink2(Vec2::new(16.0 + 8.0, 0.0)).right_center(),
-                Align2::RIGHT_CENTER,
-                text,
-                FontId::new(15.0, FontFamily::Proportional),
-                color,
-            );
-            let text_rect = text_rect.expand2(Vec2::new(10.0, 2.0));
-            p.rect_filled(
-                text_rect,
-                Rounding::same(text_rect.height() / 2.0),
-                color.gamma_multiply(0.2),
-            );
+        let to_load_finished = self.app_icons.to_load_finished();
+        let to_load = self.app_icons.to_load();
+        if to_load != to_load_finished {
+            messages.push(SearchBarMessage {
+                text:  format!("Indexing Icons {to_load_finished}/{to_load} (this may freeze)"),
+                color: Colors::BLUE,
+            });
         }
 
-        p.line_segment(
-            [rect.left_bottom(), rect.right_bottom()],
-            Stroke::new(1.0, Colors::SUBTEXT0.gamma_multiply(0.3)),
-        );
+        let output = SearchBarWidget {
+            messages,
+            query: &mut self.search_query,
+        }
+        .ui(ui);
 
-        let font = FontId::new(18.0, FontFamily::Proportional);
-        let output = TextEdit::singleline(&mut self.search_query)
-            .frame(false)
-            .vertical_align(Align::Center)
-            .text_color(Colors::TEXT)
-            .font(FontSelection::FontId(font.clone()))
-            .margin(Margin {
-                left: 8.0 + 32.0 + 6.0,
-                right: 8.0,
-                top: 0.0,
-                bottom: 0.0,
-            })
-            .min_size(rect.size())
-            .show(ui);
-
-        ui.memory_mut(|memory| {
-            memory.request_focus(output.response.id);
+        let mut case_changed = self.case_sensitive;
+        ui.input(|input| {
+            if self.search_query.trim().is_empty() {
+                self.case_sensitive = false;
+            } else if input.modifiers.shift {
+                self.case_sensitive = true;
+            }
         });
+        case_changed = case_changed != self.case_sensitive;
 
-        if output.response.changed() {
+        if output.response.changed() || case_changed {
             let query = &self.search_query.clone();
             if query.trim().is_empty() {
                 self.selected = None;
@@ -296,307 +265,64 @@ impl Application {
             }
             self.search(query);
         }
-
-        let p = ui.painter();
-
-        draw_icon(
-            p,
-            icon!("search"),
-            rect.left_center() + Vec2::new(18.0 + 12.0, -1.0),
-            18.0,
-            Colors::TEXT,
-        );
-
-        if self.search_query.is_empty() {
-            p.text(
-                output.text_clip_rect.left_center(),
-                Align2::LEFT_CENTER,
-                "Search for a program",
-                font,
-                Colors::SUBTEXT0,
-            );
-        }
     }
+
     pub fn draw_entries(&mut self, ui: &mut Ui) {
-        let row_height = ENTRY_HEIGHT + ENTRY_SPACING;
-        let num_rows = self.search_result.entries.len();
-
-        let rect = ui.max_rect();
-        ScrollArea::vertical()
-            .max_height(row_height * num_rows as f32)
-            .enable_scrolling(false)
-            .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
-            .show_viewport(ui, |ui, viewport| {
-                ui.set_height(row_height);
-
-                let first_item = (viewport.min.y / row_height).floor().at_least(0.0f32) as usize;
-                let last_item = (viewport.max.y / row_height).ceil() as usize + 1;
-                let last_item = last_item.at_most(num_rows);
-
-                let mut used_rect = Rect::NOTHING;
-
-                let min_rect = ui.min_rect();
-
-                let selected_f32 = self.selected.map(|v| v as f32).unwrap_or(-1.0);
-
-                let opacity_t = ui.ctx().animate_value_with_time(
-                    ui.id().with("animated-selected-opacity"),
-                    (selected_f32 + 1.0).clamp(0.0, 1.0),
-                    0.15,
-                );
-
-                let t = ui.ctx().animate_value_with_time(
-                    ui.id().with("animated-selected"),
-                    selected_f32.max(0.0),
-                    if opacity_t == 0.0 && selected_f32 >= 0.0 {
-                        // We skip animating if we are invisible
-                        0.0
-                    } else {
-                        0.15
-                    },
-                );
-
-                let selected_opacity = easing::cubic_out(opacity_t);
-                let mut current_selected = t;
-
-                current_selected = current_selected.floor()
-                    + if current_selected < selected_f32 {
-                        easing::cubic_out(current_selected.fract())
-                    } else {
-                        easing::cubic_in(current_selected.fract())
-                    };
-                current_selected = min_rect.top() + current_selected * row_height + 9.0;
-                let highlight_rect = {
-                    let mut rect = ui.clip_rect().shrink(8.0);
-                    rect.min.y = current_selected - 4.0;
-                    rect.max.y = current_selected + ENTRY_HEIGHT + 4.0;
-                    rect
-                };
-
-                {
-                    let p = ui.painter();
-
-                    ui.scroll_to_rect(highlight_rect.expand2(Vec2::new(0.0, 16.0)), None);
-                    p.rect(
-                        highlight_rect,
-                        Rounding::same(6.0),
-                        Colors::BG.gamma_multiply(selected_opacity),
-                        Stroke::new(0.0, Colors::SURFACE0),
-                    );
-                    draw_icon(
-                        p,
-                        icon!("play_arrow"),
-                        highlight_rect.right_center() - Vec2::new(20.0, 0.0),
-                        24.0,
-                        Colors::SUBTEXT0.gamma_multiply(selected_opacity),
-                    );
-                }
-                let top_score = self
-                    .search_result
-                    .entries
-                    .first()
-                    .map(|v| v.score.score)
-                    .unwrap_or(1.0);
-                //let mut selected_rect = None;
-
-                let mut hit_boxes = Vec::new();
-                for i in first_item..last_item {
-                    let entry = &self.search_result.entries[i];
-                    let x = min_rect.left();
-                    let y = min_rect.top() + i as f32 * row_height + 9.0;
-
-                    let rect = Rect::from_min_size(
-                        Pos2::new(x, y),
-                        Vec2::new(rect.width() - 24.0, row_height),
-                    );
-
-                    let panel_rect = {
-                        let mut rect = rect;
-                        rect.set_height(ENTRY_HEIGHT);
-                        rect
-                    };
-
-                    let mut opacity =
-                        0.4 + (entry.score.score.max(0.001) / top_score.max(0.001)) * 0.6;
-                    if self.search_query.is_empty() {
-                        opacity = 1.0;
-                    }
-
-                    let mut selected_t = (highlight_rect.intersect(panel_rect).height()
-                        / ENTRY_HEIGHT)
-                        .clamp(0.0, 1.0);
-                    let mut selected_t2 =
-                        (highlight_rect.intersect(panel_rect.expand(16.0)).height() / ENTRY_HEIGHT)
-                            .clamp(0.0, 1.0);
-
-                    selected_t *= selected_opacity;
-                    selected_t2 *= selected_opacity;
-
-                    self.draw_entry(
-                        ui,
-                        panel_rect,
-                        selected_t,
-                        opacity.max(selected_t2).clamp(0.0, 1.0),
-                        entry,
-                    );
-
-                    hit_boxes.push((panel_rect, entry.id.clone()));
-                    used_rect = used_rect.union(rect);
-                }
-
-                ui.input(|input| {
-                    if let Some(pos) = input.pointer.hover_pos() {
-                        if self.mouse_lock_from.elapsed() > Duration::from_millis(300) {
-                            for (rect, id) in &hit_boxes {
-                                let rect = rect.expand2(Vec2::new(0.0, ENTRY_SPACING / 2.0));
-                                if rect.contains(pos) {
-                                    let Some((id, _)) =
-                                        self.search_result.entries.iter().enumerate().find(|(_, v)| &v.id == id)
-                                    else {
-                                        continue;
-                                    };
-
-                                    if input.pointer.is_moving() {
-                                        self.selected = Some(id);
-                                    }
-
-                                    // If we press on an entry, we select it
-                                    if input.pointer.primary_down() {
-                                        self.open_selected();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                });
-
-                ui.allocate_rect(used_rect, Sense::click());
-            });
-    }
-
-    pub fn draw_entry(
-        &self,
-        ui: &mut Ui,
-        mut rect: Rect,
-        selected: f32,
-        opacity: f32,
-        entry: &SearchResultEntry,
-    ) -> Rect {
-        let bg_rect = rect.expand(3.0);
-        let Some(app) = self.apps.applications.get(&entry.id) else {
-            return bg_rect;
-        };
-
-        rect.max.x -= 4.0;
-        rect.min.x += 10.0;
-        rect = rect.shrink2(Vec2::new(1.0, 0.0));
-
-        let image_width = rect.height();
-        if let Some(icon) = self.app_icons.read_icon(&entry.id) {
-            let string = format!("file://{}", icon.to_str().unwrap());
-            let image = egui::Image::from_uri(string)
-                .tint(Color32::WHITE.gamma_multiply(opacity))
-                .rounding(Rounding::same(4.0));
-            let mut image_rect = rect;
-            image_rect.set_width(image_width);
-            image.paint_at(
-                ui,
-                Rect::from_center_size(image_rect.center(), Vec2::splat(IMAGE_SIZE)),
-            );
+        let events = ResultsWidget {
+            apps: &self.apps,
+            app_icons: &self.app_icons,
+            results: &self.search_result,
+            selected: self.selected,
         }
-
-        let text_color = Colors::SUBTEXT0
-            .lerp_to_gamma(Colors::TEXT, selected)
-            .gamma_multiply(opacity);
-        rect = rect.with_min_x(rect.min.x + image_width + 2.0);
-
-        let p = ui.painter();
-
-        let font = FontId::new(18.0, FontFamily::Proportional);
-        let galley = ui.ctx().fonts(|fonts| {
-            let mut job = LayoutJob {
-                wrap: TextWrapping::truncate_at_width(rect.width() - 12.0),
-                ..LayoutJob::default()
-            };
-
-            for (i, char) in app.name.chars().enumerate() {
-                let value = entry.score.indices.get(&i).unwrap_or(&0.0);
-                let value = if *value > 0.0 { *value } else { 0.0 };
-                let text_color = text_color.lerp_to_gamma(Colors::ROSEWATER, value);
-                job.append(
-                    &char.to_string(),
-                    0.0,
-                    TextFormat {
-                        font_id: font.clone(),
-
-                        color: text_color,
-                        ..TextFormat::default()
-                    },
-                )
-            }
-
-            // DEBUG
-            //{
-            //    job.append(
-            //        &format!(
-            //            "{}: {}",
-            //            self.search.get_popularity(&entry.id),
-            //            entry.score.score
-            //        ),
-            //        8.0,
-            //        TextFormat {
-            //            font_id: font.clone(),
-            //            color: text_color,
-            //            ..TextFormat::default()
-            //        },
-            //    )
-            //}
-
-            if let Some(comment) = app.comment.as_ref() {
-                if selected > 0.0 {
-                    job.append(
-                        &format!(" {comment}"),
-                        8.0,
-                        TextFormat {
-                            font_id: font.clone(),
-                            color: text_color.gamma_multiply(0.5 * selected),
-                            ..TextFormat::default()
-                        },
-                    )
+        .ui(ui);
+        for event in events {
+            match event {
+                ResultsEvent::Hovered(app_id) => {
+                    if self.mouse_lock_from.elapsed() > Duration::from_millis(300) {
+                        let Some((idx, _)) = self
+                            .search_result
+                            .entries
+                            .iter()
+                            .enumerate()
+                            .find(|(_, v)| v.id == app_id)
+                        else {
+                            continue;
+                        };
+                        self.selected = Some(idx);
+                    }
+                }
+                ResultsEvent::Pressed(app) => {
+                    self.open(app);
                 }
             }
-            fonts.layout_job(job)
-        });
-
-        {
-            let rect = Align2::LEFT_CENTER.anchor_size(rect.left_center(), galley.size());
-            p.galley(rect.min, galley, Color32::RED);
         }
-
-        bg_rect
     }
 
-    fn open_selected(&mut self) {
-        let Some(selected) = self.selected else {
-            return;
-        };
-        let Some(entry) = self.search_result.entries.get(selected) else {
-            return;
-        };
+    fn selected(&self) -> Option<&AppId> {
+        self.selected
+            .and_then(|v| self.search_result.entries.get(v).map(|v| &v.id))
+    }
 
-        let id = &entry.id;
-        let Some(app) = self.apps.applications.get(id) else {
+    fn open(&mut self, id: AppId) {
+        let Some(app) = self.apps.applications.get(&id) else {
             return;
         };
 
         let duration = self.last_top_at.elapsed();
-        if selected == 0 && duration < Duration::from_millis(150) {
+
+        // If this is the top entry, we prevent opening (from the keyboard)
+        // if the top entry changed quickly before the enter press. (to prevent misfires)
+        if self.selected == Some(0)
+            && self.selected() == Some(&id)
+            && duration < Duration::from_millis(150)
+        {
             warn!(
-                "Blocked launch of {} because it changed too quickly ({duration:?} < 150ms)",
+                "Blocked launch of {} because the stop entry changed too quickly ({duration:?} < 150ms)",
                 app.name
             );
             return;
         }
+
         let buf = app.path.canonicalize().unwrap();
         let file_path = buf.to_str().unwrap();
         let launch = ApplicationLaunch {
@@ -605,12 +331,17 @@ impl Application {
 
         let mut to_launch = self.to_launch.lock().unwrap();
         *to_launch = Some(launch);
-        self.search.record_use(id.clone()).unwrap();
+        self.search.record_use(id).unwrap();
     }
 }
 
 impl eframe::App for Application {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        if self.app_icons.tick() {
+            ctx.request_repaint();
+        }
+
+
         if let Some(start) = self.start.take() {
             info!("Initialized in {:?}", start.elapsed());
         }
@@ -630,7 +361,9 @@ impl eframe::App for Application {
                             ..
                         } = event
                         {
-                            self.open_selected();
+                            if let Some(selected) = self.selected() {
+                                self.open(selected.clone());
+                            }
                         };
                         if let Event::Key {
                             key: Key::Escape,
@@ -656,7 +389,20 @@ impl eframe::App for Application {
                         {
                             to_offset -= 1;
                         };
-
+                        if let Event::Key {
+                            key: Key::R,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } = event
+                        {
+                            if modifiers.ctrl {
+                                self.app_icons.clear_icons();
+                                for shortcut in self.apps.applications.values() {
+                                    self.app_icons.prepare_icon(shortcut);
+                                }
+                            }
+                        };
                         if let Event::MouseWheel { delta, .. } = event {
                             if delta.y > 0.0 {
                                 to_offset -= 1;
@@ -694,14 +440,6 @@ impl eframe::App for Application {
 
                 self.draw_search_bar(ui);
                 self.draw_entries(ui);
-
-                ui.input(|input| {
-                    if self.search_query.trim().is_empty() {
-                        self.case_sensitive = false;
-                    } else if input.modifiers.shift && !input.keys_down.is_empty() {
-                        self.case_sensitive = true;
-                    }
-                });
             });
 
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("Border")));
@@ -726,6 +464,10 @@ impl eframe::App for Application {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             });
         }
+    }
+
+    fn on_exit(&mut self) {
+        self.app_icons.finish().unwrap();
     }
 
     fn clear_color(&self, _visuals: &Visuals) -> [f32; 4] {

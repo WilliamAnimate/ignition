@@ -24,12 +24,13 @@ eframe = { version = "0.29", default-features = false, features = ["accesskit",
     "wgpu",
     "wayland",
     "x11", ] }
-egui_extras = { version = "0.29", features = ["all_loaders"] }
+egui_extras = { version = "0.29", features = ["file", "image"] }
+crossbeam = "0.8.4"
+image = { version = "0.25.2", default-features = false, features = ["png"] }
 
 strsim = "0.11.1"
 
 chrono = { version = "0.4.38", features = ["serde"] }
-image = "0.25.2"
 ico = "0.3.0"
 sha2 = "0.10.8"
 base64 = "0.22.1"
