@@ -196,7 +196,7 @@ impl CachedDir {
             if file.contains(icon_name) {
                 let path = path.join(file);
                 let file_name = to_string(path.file_stem().unwrap());
-                let extension = to_string(path.extension().unwrap());
+                let extension = to_string(path.extension().unwrap_or(OsStr::new("no clue")));
 
                 if extension == "xpm" {
                     continue;
