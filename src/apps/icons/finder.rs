@@ -196,17 +196,17 @@ impl CachedDir {
             if file.contains(icon_name) {
                 let path = path.join(file);
                 let file_name = to_string(path.file_stem().unwrap());
-                // HACK: don't panic on Err varient: my (admittly cursed) artix system shows
+                // HACK: don't panic on None varient: my (admittly cursed) artix system shows
                 // entries like:
                 // - not-allowed
                 // - no-drop
-                // etcetc. literally who knows what they are.
-                let extension = to_string(path.extension().unwrap_or(OsStr::new("no clue")));
-                // let extension = to_string(path.extension().unwrap());
-                info!("extension: {extension}");
-                if extension.to_string() == "no clue" {
-                    info!("found case of interest: 'no clue':\nfile_name: {}\npath: {:?}", file_name, path);
+                // this is because it scans through ALL of .icons... but in there i have my
+                // cursors.
+                if let None = path.extension() {
+                    info!("path.extension() yields a None varient... skipping file_name: {file_name}, and path: {:?}", path);
+                    continue;
                 }
+                let extension = to_string(path.extension().unwrap());
 
                 if extension == "xpm" {
                     continue;
