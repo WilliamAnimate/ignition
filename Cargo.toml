@@ -24,8 +24,7 @@ fuzzy-matcher = "0.3.7"
 eframe = { version = "0.29", default-features = false, features = ["accesskit",
     "default_fonts",
     "wgpu",
-    "wayland",
-    "x11", ] }
+    "wayland", ] }
 egui_extras = { version = "0.29", features = ["file", "image"] }
 crossbeam = "0.8.4"
 image = { version = "0.25.2", default-features = false, features = ["png"] }
@@ -47,11 +46,12 @@ resvg = "0.43.0"
 codegen-backend = "cranelift"
 
 [profile.release]
-opt-level = 's'
+opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+split-debuginfo = "off"
 
 [workspace]
 members = [
