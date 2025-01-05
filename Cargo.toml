@@ -46,6 +46,13 @@ resvg = "0.43.0"
 [profile.dev]
 codegen-backend = "cranelift"
 
+[profile.release]
+opt-level = 's'
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
 [workspace]
 members = [
     "splinter-icon",
