@@ -19,7 +19,7 @@ pub fn load_fonts() -> FontDefinitions {
 
     add_font(
         &mut fonts,
-        load_font!("../assets/Icons.ttf").tweak(FontTweak {
+        load_font!("../../../assets/Icons.ttf").tweak(FontTweak {
             scale: 1.0,
             y_offset_factor: 0.0,
             y_offset: 0.0,
@@ -29,7 +29,7 @@ pub fn load_fonts() -> FontDefinitions {
     );
     add_font(
         &mut fonts,
-        load_font!("../assets/Mukta-Regular.ttf").tweak(FontTweak {
+        load_font!("../../../assets/Mukta-Regular.ttf").tweak(FontTweak {
             scale: 1.0,
             y_offset_factor: 0.0,
             y_offset: 0.0,
@@ -40,7 +40,7 @@ pub fn load_fonts() -> FontDefinitions {
 
     add_font(
         &mut fonts,
-        load_font!("../assets/Mukta-SemiBold.ttf").tweak(FontTweak {
+        load_font!("../../../assets/Mukta-SemiBold.ttf").tweak(FontTweak {
             scale: 1.0,
             y_offset_factor: 0.0,
             y_offset: 0.0,
