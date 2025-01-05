@@ -57,3 +57,6 @@ strip = true
 members = [
     "splinter-icon",
 ]
+
+[features]
+rounded_corners = []

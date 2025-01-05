@@ -37,6 +37,11 @@ mod config;
 mod search;
 mod ui;
 
+#[cfg(feature = "rounded_corners")]
+const ROUNDED_CORNERS_LEVEL: f32 = 0.0;
+#[cfg(not(feature = "rounded_corners"))]
+const ROUNDED_CORNERS_LEVEL: f32 = 16.0;
+
 struct ApplicationLaunch {
     exec: String,
 }
@@ -445,7 +450,7 @@ impl eframe::App for Application {
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("Border")));
         painter.rect_stroke(
             rect,
-            Rounding::same(16.0),
+            Rounding::same(ROUNDED_CORNERS_LEVEL),
             Stroke::new(2.0, Colors::SURFACE0),
         );
 
