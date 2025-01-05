@@ -464,10 +464,8 @@ impl eframe::App for Application {
             self.first_focused_at = Instant::now();
         }
 
-        let is_long_enough = self.first_focused_at.elapsed().as_secs_f32() > 0.2;
         if self.to_launch.lock().unwrap().is_some()
             || should_close
-            || (!focused && self.has_window_ever_received_focus && is_long_enough)
         {
             let ctx = ctx.clone();
             std::thread::spawn(move || {
