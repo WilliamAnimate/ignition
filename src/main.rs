@@ -423,6 +423,10 @@ impl eframe::App for Application {
                         if increase {
                             if let Some(value) = &mut self.selected {
                                 *value = value.saturating_add(1);
+                                if *value == self.apps.applications.len() {
+                                    // reached end, wrap back to first (zeroth) entry
+                                    *value = 0;
+                                }
                             } else {
                                 self.selected = Some(0);
                             }
@@ -430,7 +434,8 @@ impl eframe::App for Application {
                             // decrease
                             if let Some(value) = &mut self.selected {
                                 if *value == 0 {
-                                    self.selected = None;
+                                    // reached beginning, wrap back to final entry
+                                    self.selected = Some(self.apps.applications.len());
                                 } else {
                                     *value = value.saturating_sub(1);
                                 }
