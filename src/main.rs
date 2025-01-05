@@ -123,7 +123,7 @@ fn main() -> eyre::Result<()> {
                 search_query: "".to_string(),
                 search_result: SearchResult::default(),
                 app_icons: icons,
-                selected: None,
+                selected: Some(0),
                 search,
                 case_sensitive: false,
                 has_window_ever_received_focus: false,
