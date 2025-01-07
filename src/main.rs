@@ -140,27 +140,13 @@ fn main() -> eyre::Result<()> {
     if let Some(to_launch) = &*quard {
         info!("Launching {}", to_launch.exec);
 
-        match daemon(false, false) {
-            Ok(Fork::Child) => {
-                let output = Command::new("gio")
-                    .arg("launch")
-                    .arg(&to_launch.exec)
-                    .spawn()
-                    .expect("failed to execute process");
+        Command::new("gio")
+            .arg("launch")
+            .arg(&to_launch.exec)
+            .spawn()
+            .expect("failed to execute process");
 
-                let output = output.wait_with_output().expect("Failed to run program");
-                println!("{:?}", output.status);
-                println!("{:?}", String::from_utf8(output.stdout));
-                println!("{:?}", String::from_utf8(output.stderr));
-            }
-            Ok(Fork::Parent(_)) => {
-                error!("Wrong forl");
-            }
-            Err(e) => {
-                error!("Error {e}");
-            }
-        }
-        println!("Launched");
+        info!("Launched! Baii~");
     }
     Ok(())
 }
