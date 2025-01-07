@@ -13,8 +13,6 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 
 xdg = "2.5.2"
 
-fork = "0.2.0"
-
 dirs = "5.0.1"
 rust-ini = "0.21.1"
 eyre = "0.6.12"

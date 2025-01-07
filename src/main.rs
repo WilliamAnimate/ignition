@@ -22,7 +22,6 @@ use eframe::epaint::FontFamily;
 use eframe::{egui, NativeOptions};
 use egui_extras::install_image_loaders;
 use eyre::{Context, ContextCompat};
-use fork::{daemon, Fork};
 use splinter_icon::icon;
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info, warn};
